@@ -1,110 +1,380 @@
-use std::env;
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-fn main() 
-{
-    let args: Vec<String> = env::args().collect();
-    // Vectors in the basis are (101, 0, 0), (0, 208, 0), and (0, 0, 97)
-    // Base vector is (543, 600, 220)
-    // Distance is 52 (closest integer above) and d^2 = 2696
-    // Closest vector should be (505, 624, 194) = (5*x + 3*y + 2*z).
-
-    // We get (x-543)^2 + (y-600)^2 + (z-194)^2 <= 2025
-
-    let base     = vec![543, 600, 220];
-    let x0       = vec![101, 0, 0];
-    let x1       = vec![0, 208, 0];
-    let x2       = vec![0, 0, 97];
-    let xs       = vec![&x0, &x1, &x2];
-    let distance = 52;
-    // Runs in 15s. Small dim, orthogonal and small numbers
-
-    // let base     = vec![543, 600, 220, -420, 62, 234];
-    // let x0       = vec![101, 0, 0, 0, 0, 0];
-    // let x1       = vec![0, 208, 0, 0, 0, 0];
-    // let x2       = vec![0, 0, 97, 0, 0, 0];
-    // let x3       = vec![0, 0, 0, -122, 0, 0];
-    // let x4       = vec![0, 0, 0, 0, 32, 0];
-    // let x5       = vec![0, 0, 0, 0, 0, -42];
-    // let xs       = vec![&x0, &x1, &x2, &x3, &x4, &x5];
-    // let distance = 110;
-    // Runs in 17m43.476s. medium dim, orthogonal and small numbers
-
-    // let base     = vec![543, 600, 220, -420, 62, 234];
-    // let x0       = vec![101, -30, 27, 79, 64, 11];
-    // let x1       = vec![58, 208, 73, 23, 82, -32];
-    // let x2       = vec![35, -56, 97, -83, -78, 57];
-    // let x3       = vec![36, 46, 0, -122, -23, -28];
-    // let x4       = vec![0, 34, 89, 23, 32, 47];
-    // let x5       = vec![-23, -82, 35, 68, 123, -42];
-    // let xs       = vec![&x0, &x1, &x2, &x3, &x4, &x5];
-    // let distance = 200;
-    // Runs in 17m43.476s. medium dim, not orthogonal and small numbers
-
-    // let base     = vec![5432, 6000];
-    // let x0       = vec![1001, 0];
-    // let x1       = vec![0, 2008];
-    // let xs       = vec![&x0, &x1];
-    // let distance = 428;
-    // 5005, 6024 is a lattice point. So the distance is 428
-    // Runs in 39m52.889s. Small dim, orthogonal and larger numbers.
-
-    // let base     = vec![100, 100, 100];
-    // let x0       = vec![35, 72, -100];
-    // let x1       = vec![-10, 0, -25];
-    // let x2       = vec![-20, -279, 678];
-    // let xs       = vec![&x0, &x1, &x2];
-    // let distance = 1;
-    // 100,99,100 is a lattice point. So the distance is 1
-    // Runs in 52m55.033s. Small dim, not orthogonal and medium numbers (on average)
+use clap::{Arg, App};
+use lll_rs::{
+    lll::biglll,
+    matrix::Matrix,
+    vector::BigVector,
+};
+use rug::{
+    Integer,
+    rand::RandState
+};
+use serde::{Deserialize, Serialize};
+use serde_json;
 
 
-
-    let mut constraint: String = format!("(>= (sq {}) (+ ", distance);
-
-    for idx in 0..x0.len() // fixed dimension
-    {
-        constraint.push_str("(sq (- (+ ");
-        for jdx in 0..xs.len() // fixed coefficient
-        {
-            let tmp = format!("(* x{} {}) ", jdx, xs[jdx][idx]);
-            constraint.push_str(&tmp);
-        }
-        let tmp = format!(") {})) ", base[idx]);
-        constraint.push_str(&tmp);
+#[derive(Deserialize)]
+struct CVPInstance {
+    basis:    Vec<Vec<i64>>,
+    target:   Vec<i64>,
+    distance: usize,
+}
+impl Default for CVPInstance {
+    fn default () -> CVPInstance {
+        CVPInstance{basis: vec![], target: vec![], distance: 0}
     }
-    constraint.push_str("))");
+}
 
-    println!("testing {}",constraint);
-    decision(&constraint, x0.len());
-    search(&constraint, x0.len());
+#[derive(Serialize)]
+struct CVPResult {
+    formula:      String,
+    decision:     bool,
+    basis:        Vec<Vec<i64>>,
+    target:       Vec<i64>,
+    distance:     usize,
+    witness:      Vec<i64>,
+    coefficients: Vec<i64>,
+}
+impl Default for CVPResult {
+    fn default () -> CVPResult {
+        CVPResult{formula: String::new(), decision: false, basis: vec![], target: vec![], distance: 0, witness: vec![], coefficients:vec![]}
+    }
+}
+
+
+// I'm not sure how to unify the errors from all sources. I could design my own error type, but that seems heavy handed. 
+fn main() -> std::io::Result<()>
+{
+    // CLI arguments
+    let matches = App::new("Lattice-Sat")
+                          .version("0.0.1")
+                          .author("Oreko")
+                          .about("Solve small CVP instances using an SMT solver")
+                          .arg(Arg::with_name("INPUT")
+                               .help("Sets the input file to use")
+                               .required(false)
+                               .index(1))
+                          .arg(Arg::with_name("lll")
+                               .short("l")
+                               .help("Use LLL to simplify the basis before running"))
+                          .arg(Arg::with_name("n2")
+                               .short("n")
+                               .help("Use the l2 norm instead of the linf norm"))
+                          .arg(Arg::with_name("rand")
+                               .short("r")
+                               .value_name("DEGREE")
+                               .help("Generate a random degree DEGREE instance of CVP"))
+                          .get_matches();
+
+    let mut data: CVPInstance = CVPInstance::default(); // I'm not sure what the accepted way of doing this is
+    if let Some(filename) = matches.value_of("INPUT")
+    {
+        if matches.is_present("rand")
+        {
+            println!("Please specify either an input configuration or a random instance.");
+            return Ok(());
+        }
+        let json_string: String = fs::read_to_string(filename)?;
+        data = serde_json::from_str(&json_string)?;
+    } else if matches.is_present("rand")
+    {
+        let degree_str = matches.value_of("rand").unwrap(); // Unwrap is safe since we checked for rand's presence
+        let degree = degree_str.parse::<usize>().unwrap_or(1);
+        if degree > 1 // This felt cleaner than the corresponding match and check.
+        {
+            let l2_norm = matches.is_present("n2");
+            data = generate_random_instance(degree, l2_norm);
+        } else
+        {
+            println!("Please specify a positive integer greater than 1 for DEGREE.");
+            return Ok(());
+        }
+        
+    } else
+    {
+        println!("Please specify either an input configuration or a random instance.");
+        return Ok(());
+    }
+
+    let m: usize = data.basis.len();
+    let n: usize = data.basis[0].len();
+    let mut basis: Matrix<BigVector> = Matrix::init(m, n);
+
+    assert_eq!(n, data.target.len());
+
+    for i in 0..m // For some reason, map() based conversion gave errors
+    {
+        let mut vec: Vec<Integer> = Vec::new();
+        for j in 0..n
+        {
+            vec.push(Integer::from(data.basis[i][j])); 
+        }
+        basis[i] = BigVector::from_vector(vec);
+    }
+
+    if matches.is_present("lll")
+    {
+        // This sometimes fails with a divide by zero error?
+        // I wonder if this is a problem with the library or a problem with my code.
+        // If I come back to this I'll look into it more.
+        biglll::lattice_reduce(&mut basis);
+    }
+
+    let mut constraint: String = String::new();
+    if matches.is_present("n2")
+    {
+        constraint.push_str(&l2_constraint_builder(&basis, &data.target, data.distance));
+    } else
+    {
+        constraint.push_str(&linf_constraint_builder(&basis, &data.target, data.distance));
+    }
+    match search(&constraint, basis.dimensions().0)
+    {
+        Ok(mut result) =>
+        {
+            result.witness = vec![0; n];
+            for (idx, coe) in result.coefficients.iter().enumerate()
+            {
+                for jdx in 0..n
+                {
+                    let elem: i64 = basis[idx][jdx].to_i64().unwrap(); // This should be safe, however I don't have enough time to make sure.
+                    let number = coe.checked_mul(elem).expect("Caught integer overflow, witness was too large.");
+                    let sum = result.witness[jdx].checked_add(number).expect("Caught integer overflow, witness was too large.");
+                    result.witness[jdx] = sum;
+                }
+            }
+            result.target = data.target;
+            result.distance = data.distance;
+            result.basis = data.basis;
+            let j = serde_json::to_string_pretty(&result).unwrap(); // Safe unwrap
+            println!("{}",j);
+        }
+        Err(e) =>
+        {
+            // I'd like to propagate this error, but the types don't unify.
+            println!("{}", e);
+        }
+    }
+    return Ok(());
+}
+
+fn triangle(n: usize) -> usize
+{
+    let mut res = 0;
+    for i in 1..n+1
+    {
+        res += i;
+    }
+    return res;
+}
+
+fn generate_random_instance(degree: usize, l2_norm: bool) -> CVPInstance
+{
+    let mut instance = CVPInstance::default();
+
+    // Set up our random number generator
+    let seed = Integer::from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock error").as_millis());
+    let mut rand = RandState::new_mersenne_twister();
+    rand.seed(&seed);
+
+    // Number of non 0/1 values in the two matrices for degree "degree"
+    let per_matrix = triangle(degree-1);
+    let rands_needed = 2*per_matrix;
+    let mut unimodular: Vec<i64> = vec![0; rands_needed];
+    let mut base: Vec<i64>       = vec![];
+    for i in 0..(rands_needed)
+    {
+        // This will generate numbers between -5 and 5
+        // This follows the ideas proposed in the GGH paper
+        let mut elem = rand.below(5) as i64;
+        let sign = rand.bits(1) as i64;
+        if sign == 1
+        {
+            elem = elem * -1;
+        }
+        unimodular[i] = elem;
+    }
+    for _ in 0..degree
+    {
+        // Random numbers for the "good" basis
+        let mut basis_elem = rand.below(50) as i64;
+        let basis_sign = rand.bits(1);
+        if basis_sign == 1
+        {
+            basis_elem = basis_elem * -1;
+        }
+        base.push(basis_elem);
+
+        // Random numbers for the target vector
+        let mut target_elem = rand.below(50) as i64;
+        let target_sign = rand.bits(1);
+        if target_sign == 1
+        {
+            target_elem = target_elem * -1;
+        }
+        instance.target.push(target_elem);
+    }
+    // Generate the basis
+
+    // Generate the two unimodular matrices
+    let mut u1: Vec<Vec<i64>> = vec![];
+    for i in 0..degree
+    {
+        let mut inner: Vec<i64> = vec![0; degree];
+        inner[i] = 1;
+        for j in 0..i
+        {
+            // Loop skips for i = 0, so triangle(i-1) is defined.
+            inner[j] = unimodular[triangle(i-1) + j];
+        }
+        u1.push(inner);
+    }
+
+    let mut u2: Vec<Vec<i64>> = vec![];
+    let mut offset: usize = 0;
+    for i in 0..degree
+    {
+        let mut inner: Vec<i64> = vec![0; degree];
+        let sign = rand.bits(1);
+        if sign == 1
+        {
+            inner[i] = -1;
+        } else
+        {
+            inner[i] = 1;
+        }
+        
+        
+        for j in 1..degree-i
+        {
+            inner[i+j] = unimodular[per_matrix - 1 + offset + j];
+        }
+        offset += degree-1-i;
+        u2.push(inner);
+    }
+    
+    // Generate the original basis
+    let mut b: Vec<Vec<i64>> = vec![];
+    for i in 0..degree
+    {
+        let mut inner: Vec<i64> = vec![0; degree];
+        inner[i] = base[i];
+        b.push(inner);
+    }
+
+    // Calculate the norm using the "good" basis
+    if l2_norm
+    {
+        // Calculate the l2 norm
+        let mut sum_of_squares = 0;
+        for i in 0..degree
+        {
+            // This isn't the tightest bound, but given the basis obfuscation it should be good enough.
+            sum_of_squares += (b[i][i] - instance.target[i]).pow(2);
+        }
+        instance.distance = integer_sqrt(sum_of_squares).unwrap() as usize; // this coversion should be ok. We know the size and sign of the data.
+    } else
+    {
+        // Calculate the linf norm
+        let mut norms: Vec<usize> = vec![0; degree];
+        for i in 0..degree
+        {
+            // This isn't the tightest bound, but given the basis obfuscation it should be good enough.
+            let tmp = b[i][i] - instance.target[i];
+            norms[i] = tmp.abs() as usize;
+        }
+        instance.distance = *norms.iter().max().unwrap(); // Both the unwrap and dereference are safe here.
+    }
+    
+    // Basis = U1 U2 B
+    instance.basis = sq_matrix_mult(sq_matrix_mult(u1, u2), b);
+    
+    return instance;
+}
+
+// This is a quick and dirty algorithm and can be optimized using euclidian division for instance.
+fn integer_sqrt(a: i64) -> Option<i64>
+{
+    if a < 0 {return None}
+
+    let mut i: i64 = 1;
+    let mut result: i64 = 1; 
+    while result <= a
+    { 
+      i += 1; 
+      result = i * i; 
+    } 
+
+    return Some(i+1);
+}
+
+// We trust the input data. I may fix this if I come back to this code.
+fn sq_matrix_mult(a: Vec<Vec<i64>>, b: Vec<Vec<i64>>) -> Vec<Vec<i64>>
+{
+    let mut result: Vec<Vec<i64>> = vec![];
+    let n: usize = a.len();
+    for i in 0..n
+    {
+        result.push(vec![0; n]);
+        for j in 0..n
+        {
+            for k in 0..n
+            {
+                result[i][j] += a[i][k] * b[k][j];
+            }
+            
+        }
+    }
+    return result;
+}
+
+fn l2_constraint_builder(basis: &Matrix<BigVector>, target: &Vec<i64>, distance: usize) -> String
+{
+    let dims = basis.dimensions();
+    let mut l2_constraint: String = format!("(>= (sq {}) (+ ", distance);
+
+    for idx in 0..dims.1 // fixed dimension
+    {
+        l2_constraint.push_str("(sq (- (+ ");
+        for jdx in 0..dims.0 // fixed coefficient
+        {
+            let tmp = format!("(* x{} {}) ", jdx, basis[jdx][idx]);
+            l2_constraint.push_str(&tmp);
+        }
+        let tmp = format!(") {})) ", target[idx]);
+        l2_constraint.push_str(&tmp);
+    }
+    l2_constraint.push_str("))");
+
+    return l2_constraint;
+}
+
+fn linf_constraint_builder(basis: &Matrix<BigVector>, target: &Vec<i64>, distance: usize) -> String
+{
+    let dims = basis.dimensions();
+    let mut linf_constraint: String = "(and ".to_string();
+
+    for idx in 0..dims.1 // fixed dimension
+    {
+        let tmp = format!("(>= {} (abs (- {} (+ ", distance, target[idx]);
+        linf_constraint.push_str(&tmp);
+        for jdx in 0..dims.0 // fixed coefficient
+        {
+            let tmp = format!("(* x{} {}) ", jdx, basis[jdx][idx]);
+            linf_constraint.push_str(&tmp);
+        }
+        linf_constraint.push_str("))))");
+    }
+    linf_constraint.push_str(")");
+
+    return linf_constraint;
 }
 
 
 // Dear rust devs. Please make a do notation. Sincerely, everyone.
-// Also, although these functions seem to return a result type, the compiler seems to think they don't. Therefore, the .unwrap()s.
-fn decision(constraint: &String, num_vectors: usize)
-{
-    use rsmt2::Solver;
-    let mut solver = Solver::default(()).unwrap();
-    solver.set_option(":parallel.enable", true).unwrap();
-
-    solver.define_fun(
-        "sq", & [ ("n", "Int") ], "Int", "(* n n)"
-    ).unwrap();
-
-    for i in 0..num_vectors
-    {
-        let tmp = format!("x{}", i);
-        solver.declare_const(&tmp, "Int").unwrap();
-    }
-
-    solver.assert(constraint).unwrap();
-
-    let is_sat = solver.check_sat().unwrap();
-    assert_eq! { is_sat, true }
-}
-
-fn search(constraint: &String, num_vectors: usize)
+fn search(constraint: &String, num_vectors: usize) -> Result<CVPResult, rsmt2::errors::Error>
 {
     use rsmt2::{ Solver, SmtRes };
     use rsmt2::parse::{ IdentParser, ModelParser };
@@ -135,28 +405,62 @@ fn search(constraint: &String, num_vectors: usize)
         }
     }
 
-    let mut solver = Solver::default(Parser).unwrap();
-    solver.set_option(":parallel.enable", true).unwrap();
+    let mut solver = Solver::default(Parser)?;
+    solver.set_option(":parallel.enable", true)?;
 
     solver.define_fun(
         "sq", & [ ("n", "Int") ], "Int", "(* n n)"
-    ).unwrap();
+    )?;
+
+    solver.define_fun(
+        "abs", & [ ("n", "Int") ], "Int", "(ite (< n 0) (- 0 n) n)"
+    )?;
 
     for i in 0..num_vectors
     {
         let tmp = format!("x{}", i);
-        solver.declare_const(&tmp, "Int").unwrap();
+        solver.declare_const(&tmp, "Int")?;
     }
 
-    solver.assert(constraint).unwrap();
+    solver.assert(constraint)?;
     
+    let mut result: CVPResult = CVPResult::default();
 
-    let is_sat = solver.check_sat().unwrap();
-    assert_eq! { is_sat, true }
-
-    let model = solver.get_model().unwrap();
-    for (ident, _, kind, value) in model
+    match solver.check_sat()
     {
-        println!("{}, {}, {}", ident, kind, value);
+        Ok(res) => result.decision = res,
+        Err(err) => return Err(err),
     }
+    if result.decision
+    {
+        let mut model = solver.get_model()?;
+        // I don't trust rsmt2 to provide the elements of the model in any particular order.
+        // We know that each identifier will be "x#" and unique, so lexicographic sort will work.
+        model.sort_by(|a, b| a.0.cmp(&(b.0)));
+        for (_, _, _, value) in model
+        {
+            match value.parse::<i64>()
+            {
+                Ok(number) => result.coefficients.push(number),
+                Err(_) => // Happens in the case of negative values. Then we need to parse it ourselves.
+                {
+                    // Negative strings come in the form (- #####)
+                    // So we'll simply strip whitespace and paranthesis.
+                    let value = value.replace(&['(', ')', ' '][..], "");
+                    match value.parse::<i64>() // I wonder if there's a cleaner way of doing this without writing my own parser.
+                    {
+                        Ok(res) => result.coefficients.push(res),
+                        Err(_) =>
+                        {
+                            println!("Caught integer overflow, results will be inaccurate.");
+                            result.coefficients.push(0);
+                        }
+                    }
+                }
+            }
+            
+        }
+        result.formula.push_str(constraint);
+    }
+    return Ok(result);
 }
