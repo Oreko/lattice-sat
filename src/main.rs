@@ -460,7 +460,7 @@ fn search(constraint: &String, num_vectors: usize) -> Result<CVPResult, rsmt2::e
     {
         let mut model = solver.get_model()?;
         // I don't trust rsmt2 to provide the elements of the model in any particular order.
-        // We know that each identifier will be "x#" and unique, so lexicographic sort will work.
+        // We know that each identifier will be "x#" and unique, this sort will work.
         model.sort_by(|a, b| cmp_coef(&a.0, &b.0));
         for (_, _, _, value) in model
         {
