@@ -140,6 +140,7 @@ fn main() -> std::io::Result<()>
             result.target = data.target;
             result.distance = data.distance;
             result.basis = data.basis;
+            result.formula.push_str(&constraint);
             let j = serde_json::to_string_pretty(&result).unwrap(); // Safe unwrap
             println!("{}",j);
         }
@@ -319,7 +320,7 @@ fn matrix_mult(a: &Vec<Vec<i64>>, b: &Vec<Vec<i64>>) -> Option<Vec<Vec<i64>>>
             {
                 let product = a[i][k].checked_mul(b[k][j])?;
                 let sum = result[i][j].checked_add(product)?;
-                result[i][j] += sum;
+                result[i][j] = sum;
             }
             
         }
@@ -328,6 +329,7 @@ fn matrix_mult(a: &Vec<Vec<i64>>, b: &Vec<Vec<i64>>) -> Option<Vec<Vec<i64>>>
 }
 
 // We trust the input data. I may fix this if I come back to this code.
+// 1xM times MxN
 fn vec_matrix_mult(a: &Vec<i64>, b: &Vec<Vec<i64>>) -> Option<Vec<i64>>
 {
     let m: usize = a.len();
@@ -466,9 +468,7 @@ fn search(constraint: &String, num_vectors: usize) -> Result<CVPResult, rsmt2::e
                     result.coefficients.push(res);
                 }
             }
-            
         }
-        result.formula.push_str(constraint);
     }
     return Ok(result);
 }
