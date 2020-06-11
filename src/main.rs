@@ -216,7 +216,15 @@ fn generate_random_instance(degree: usize, l2_norm: bool) -> CVPInstance
     for i in 0..degree
     {
         let mut inner: Vec<i64> = vec![0; degree];
-        inner[i] = 1;
+        let sign = rand.bits(1);
+        if sign == 1
+        {
+            inner[i] = -1;
+        } else
+        {
+            inner[i] = 1;
+        }
+        
         for j in 0..i
         {
             // Loop skips for i = 0, so triangle(i-1) is defined.
