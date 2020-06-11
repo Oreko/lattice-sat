@@ -1,4 +1,9 @@
 <pre>
+This is a class project for CS541 at oregon state university.
+
+The purpose of this tool is to reduce the DCVP (decisional closest vector problem) to the SMT (satifiable modulo theories) problem and solve it using an SMT solver.
+
+
 Necessary tools:
     z3
     m4
@@ -12,8 +17,11 @@ Output format is json as well.
 Example usage:
 lattice-sat -l -r 10
             ^ Use LLL to reduce the basis
-               ^ Generate a random instance of CVP
-                   ^ Of degree 10
+               ^ Generate a random instance of DCVP
+                  ^ Of degree 10
+lattice-sat -n test_data.json
+            ^ Solve over the L2 norm
+               ^ On the instance encoded in this file
 
 --help output
 USAGE:
