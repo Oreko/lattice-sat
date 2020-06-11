@@ -29,3 +29,11 @@ OPTIONS:
 
 ARGS:
     <INPUT>    Sets the input file to use
+
+
+
+An Aside:
+
+This is my first project using rust, and it was (due to lack of foresight) done in a rushed timeframe. 
+As such, be aware that there will be sins and antipatterns, lack of generics, and unsafe code. 
+Use and read at your own risk.
