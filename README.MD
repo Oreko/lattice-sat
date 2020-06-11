@@ -1,5 +1,5 @@
 <pre>
-This is a class project for CS541 at oregon state university.
+This is a class project for CS517 at oregon state university.
 
 The purpose of this tool is to reduce the DCVP (decisional closest vector problem) to the SMT
 (satifiable modulo theories) problem and solve it using an SMT solver.
