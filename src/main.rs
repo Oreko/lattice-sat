@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,7 +40,8 @@ struct CVPResult {
 }
 impl Default for CVPResult {
     fn default () -> CVPResult {
-        CVPResult{formula: String::new(), decision: false, basis: vec![], target: vec![], distance: 0, witness: vec![], coefficients:vec![]}
+        CVPResult{formula: String::new(), decision: false, basis: vec![], target: vec![], distance: 0, 
+                  witness: vec![], coefficients:vec![]}
     }
 }
 
@@ -134,17 +136,7 @@ fn main() -> std::io::Result<()>
     {
         Ok(mut result) =>
         {
-            result.witness = vec![0; n];
-            for (idx, coe) in result.coefficients.iter().enumerate()
-            {
-                for jdx in 0..n
-                {
-                    let elem: i64 = basis[idx][jdx].to_i64().unwrap(); // This should be safe, however I don't have enough time to make sure.
-                    let number = coe.checked_mul(elem).expect("Caught integer overflow, witness was too large.");
-                    let sum = result.witness[jdx].checked_add(number).expect("Caught integer overflow, witness was too large.");
-                    result.witness[jdx] = sum;
-                }
-            }
+            result.witness = vec_matrix_mult(&result.coefficients, &data.basis).expect("Caught integer over/underflow");
             result.target = data.target;
             result.distance = data.distance;
             result.basis = data.basis;
@@ -289,7 +281,8 @@ fn generate_random_instance(degree: usize, l2_norm: bool) -> CVPInstance
     }
     
     // Basis = U1 U2 B
-    instance.basis = sq_matrix_mult(sq_matrix_mult(u1, u2), b);
+    let u = matrix_mult(&u1, &u2).expect("Caught integer over/underflow");
+    instance.basis = matrix_mult(&u, &b).expect("Caught integer over/underflow");
     
     return instance;
 }
@@ -311,23 +304,45 @@ fn integer_sqrt(a: i64) -> Option<i64>
 }
 
 // We trust the input data. I may fix this if I come back to this code.
-fn sq_matrix_mult(a: Vec<Vec<i64>>, b: Vec<Vec<i64>>) -> Vec<Vec<i64>>
+fn matrix_mult(a: &Vec<Vec<i64>>, b: &Vec<Vec<i64>>) -> Option<Vec<Vec<i64>>>
 {
     let mut result: Vec<Vec<i64>> = vec![];
     let n: usize = a.len();
+    let m: usize = a[0].len();
+    let l: usize = b[0].len();
     for i in 0..n
     {
-        result.push(vec![0; n]);
-        for j in 0..n
+        result.push(vec![0; l]);
+        for j in 0..l
         {
-            for k in 0..n
+            for k in 0..m
             {
-                result[i][j] += a[i][k] * b[k][j];
+                let product = a[i][k].checked_mul(b[k][j])?;
+                let sum = result[i][j].checked_add(product)?;
+                result[i][j] += sum;
             }
             
         }
     }
-    return result;
+    return Some(result);
+}
+
+// We trust the input data. I may fix this if I come back to this code.
+fn vec_matrix_mult(a: &Vec<i64>, b: &Vec<Vec<i64>>) -> Option<Vec<i64>>
+{
+    let m: usize = a.len();
+    let n: usize = b[0].len();
+    let mut result: Vec<i64> = vec![0; m];
+    for i in 0..n
+    {
+        for j in 0..m
+        {
+            let product = a[j].checked_mul(b[j][i])?;
+            let sum = result[i].checked_add(product)?;
+            result[i] = sum;
+        }
+    }
+    return Some(result);
 }
 
 fn l2_constraint_builder(basis: &Matrix<BigVector>, target: &Vec<i64>, distance: usize) -> String
@@ -436,10 +451,10 @@ fn search(constraint: &String, num_vectors: usize) -> Result<CVPResult, rsmt2::e
         let mut model = solver.get_model()?;
         // I don't trust rsmt2 to provide the elements of the model in any particular order.
         // We know that each identifier will be "x#" and unique, so lexicographic sort will work.
-        model.sort_by(|a, b| a.0.cmp(&(b.0)));
+        model.sort_by(|a, b| cmp_coef(&a.0, &b.0));
         for (_, _, _, value) in model
         {
-            match value.parse::<i64>()
+            match value.parse::<i64>()// I wonder if there's a cleaner way of doing this without writing my own parser.
             {
                 Ok(number) => result.coefficients.push(number),
                 Err(_) => // Happens in the case of negative values. Then we need to parse it ourselves.
@@ -447,15 +462,8 @@ fn search(constraint: &String, num_vectors: usize) -> Result<CVPResult, rsmt2::e
                     // Negative strings come in the form (- #####)
                     // So we'll simply strip whitespace and paranthesis.
                     let value = value.replace(&['(', ')', ' '][..], "");
-                    match value.parse::<i64>() // I wonder if there's a cleaner way of doing this without writing my own parser.
-                    {
-                        Ok(res) => result.coefficients.push(res),
-                        Err(_) =>
-                        {
-                            println!("Caught integer overflow, results will be inaccurate.");
-                            result.coefficients.push(0);
-                        }
-                    }
+                    let res = value.parse::<i64>().expect("Caught integer over/underflow, coefficient was too large.");
+                    result.coefficients.push(res);
                 }
             }
             
@@ -463,4 +471,12 @@ fn search(constraint: &String, num_vectors: usize) -> Result<CVPResult, rsmt2::e
         result.formula.push_str(constraint);
     }
     return Ok(result);
+}
+
+fn cmp_coef(a: &str, b:&str) -> Ordering
+{
+    let first  = &a[1..a.len()].parse::<i64>().unwrap(); // Potentially unsafe due to overflows.
+    let second = &b[1..b.len()].parse::<i64>().unwrap(); // Potentially unsafe due to overflows.
+
+    return first.cmp(second);
 }
